@@ -119,10 +119,11 @@ jobs:
           gh release download -R pal1000/mesa-dist-win -p "*release-msvc.7z" -D C:\mesa
           $seven = (Get-ChildItem C:\mesa\*.7z | Select-Object -First 1).FullName
           7z x $seven -oC:\mesa\x -y | Out-Null
-          foreach ($n in 'opengl32.dll','libgallium_wgl.dll','libglapi.dll') {
-            $f = Join-Path C:\mesa\x\x64 $n
-            if (Test-Path $f) { Copy-Item $f $env:APP }
-          }
+          Get-ChildItem C:\mesa\x -Depth 1 | Select-Object FullName | Out-String -Width 200 | Tee-Object "$env:OUT\mesa.txt"
+          $gl = Get-ChildItem C:\mesa\x -Recurse -Filter opengl32.dll | Where-Object { $_.FullName -match 'x64' } | Select-Object -First 1
+          "mesa opengl32: $($gl.FullName)" | Tee-Object -Append "$env:OUT\mesa.txt"
+          if ($gl) { Copy-Item (Join-Path $gl.DirectoryName '*.dll') $env:APP -Force }
+          Get-ChildItem $env:APP | Select-Object Name,Length | Out-String -Width 200 | Tee-Object -Append "$env:OUT\mesa.txt"
           $env:GALLIUM_DRIVER = 'llvmpipe'
           $p = Start-Process -FilePath "$env:APP\Balatro Overhaul Launcher.exe" -PassThru
           Start-Sleep 60
