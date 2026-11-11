@@ -116,10 +116,12 @@ jobs:
         run: |
           $ErrorActionPreference = 'Continue'
           New-Item -ItemType Directory -Force C:\mesa | Out-Null
-          gh release download -R pal1000/mesa-dist-win -p "*release-msvc.7z" -D C:\mesa
+          gh release download 24.2.7 -R pal1000/mesa-dist-win -p "mesa3d-24.2.7-release-msvc.7z" -D C:\mesa
+          if (-not (Get-ChildItem C:\mesa\*.7z -ErrorAction SilentlyContinue)) { gh release download -R pal1000/mesa-dist-win -p "*release-mingw.7z" -D C:\mesa }
           $seven = (Get-ChildItem C:\mesa\*.7z | Select-Object -First 1).FullName
+          "mesa package: $seven" | Tee-Object "$env:OUT\mesa_package.txt"
           7z x $seven -oC:\mesa\x -y | Out-Null
-          Get-ChildItem C:\mesa\x -Depth 1 | Select-Object FullName | Out-String -Width 200 | Tee-Object "$env:OUT\mesa.txt"
+          Get-ChildItem C:\mesa\x\x64 | Select-Object FullName | Out-String -Width 200 | Tee-Object "$env:OUT\mesa.txt"
           $gl = Get-ChildItem C:\mesa\x -Recurse -Filter opengl32.dll | Where-Object { $_.FullName -match 'x64' } | Select-Object -First 1
           "mesa opengl32: $($gl.FullName)" | Tee-Object -Append "$env:OUT\mesa.txt"
           if ($gl) { Copy-Item (Join-Path $gl.DirectoryName '*.dll') $env:APP -Force }
