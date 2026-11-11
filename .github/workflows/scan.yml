@@ -1,0 +1,166 @@
+name: Defender scan
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag that holds the launcher zip
+        default: launcher
+
+permissions:
+  contents: read
+
+jobs:
+  scan:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: powershell
+    env:
+      GH_TOKEN: ${{ github.token }}
+      APP: C:\scan\Balatro Overhaul Launcher
+      OUT: C:\out
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Defender as the runner ships it
+        run: |
+          New-Item -ItemType Directory -Force $env:OUT | Out-Null
+          Get-MpComputerStatus | Select-Object AMServiceEnabled,AntivirusEnabled,RealTimeProtectionEnabled,BehaviorMonitorEnabled,IoavProtectionEnabled,OnAccessProtectionEnabled,AMRunningMode,AntivirusSignatureVersion,AntivirusSignatureLastUpdated | Format-List | Out-String | Tee-Object "$env:OUT\defender_before.txt"
+          Get-MpPreference | Select-Object ExclusionPath,ExclusionProcess,ExclusionExtension,DisableRealtimeMonitoring,DisableBehaviorMonitoring,DisableIOAVProtection,DisableScriptScanning,DisableArchiveScanning,MAPSReporting,CloudBlockLevel,PUAProtection | Format-List | Out-String | Tee-Object -Append "$env:OUT\defender_before.txt"
+
+      - name: Turn Defender on like a home PC
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $p = Get-MpPreference
+          foreach ($x in @($p.ExclusionPath)) { if ($x) { Remove-MpPreference -ExclusionPath $x } }
+          foreach ($x in @($p.ExclusionProcess)) { if ($x) { Remove-MpPreference -ExclusionProcess $x } }
+          foreach ($x in @($p.ExclusionExtension)) { if ($x) { Remove-MpPreference -ExclusionExtension $x } }
+          Set-MpPreference -DisableRealtimeMonitoring $false
+          Set-MpPreference -DisableBehaviorMonitoring $false
+          Set-MpPreference -DisableIOAVProtection $false
+          Set-MpPreference -DisableScriptScanning $false
+          Set-MpPreference -DisableArchiveScanning $false
+          Set-MpPreference -DisableBlockAtFirstSeen $false
+          Set-MpPreference -MAPSReporting Advanced
+          Set-MpPreference -SubmitSamplesConsent NeverSend
+          Set-MpPreference -CloudBlockLevel High
+          Set-MpPreference -PUAProtection Enabled
+          Update-MpSignature
+          Start-Sleep 15
+          Get-MpComputerStatus | Select-Object AMServiceEnabled,AntivirusEnabled,RealTimeProtectionEnabled,BehaviorMonitorEnabled,IoavProtectionEnabled,OnAccessProtectionEnabled,AMRunningMode,AntivirusSignatureVersion,AntivirusSignatureLastUpdated | Format-List | Out-String | Tee-Object "$env:OUT\defender_after.txt"
+          Get-MpPreference | Select-Object ExclusionPath,ExclusionProcess,ExclusionExtension,DisableRealtimeMonitoring,DisableBehaviorMonitoring,DisableIOAVProtection,DisableScriptScanning,DisableArchiveScanning,MAPSReporting,CloudBlockLevel,PUAProtection | Format-List | Out-String | Tee-Object -Append "$env:OUT\defender_after.txt"
+          exit 0
+
+      - name: Check Defender really catches something
+        run: |
+          $ErrorActionPreference = 'Continue'
+          New-Item -ItemType Directory -Force C:\eicar | Out-Null
+          $a = 'X5O!P%@AP[4\PZX54(P^)7CC)7}$EICAR-STANDARD-'
+          $b = 'ANTIVIRUS-TEST-FILE!$H+H*'
+          [IO.File]::WriteAllText('C:\eicar\eicar.com', $a + $b)
+          Start-Sleep 20
+          $gone = -not (Test-Path C:\eicar\eicar.com)
+          & "$env:ProgramFiles\Windows Defender\MpCmdRun.exe" -Scan -ScanType 3 -File C:\eicar -DisableRemediation | Out-Null
+          $code = $LASTEXITCODE
+          "eicar removed by real-time protection: $gone" | Tee-Object "$env:OUT\eicar.txt"
+          "eicar scan exit code (2 = threat found): $code" | Tee-Object -Append "$env:OUT\eicar.txt"
+          exit 0
+
+      - name: Download and unpack the launcher
+        run: |
+          New-Item -ItemType Directory -Force C:\dl, C:\scan | Out-Null
+          gh release download "${{ inputs.tag }}" -R "${{ github.repository }}" -p "*.zip" -D C:\dl
+          $zip = (Get-ChildItem C:\dl\*.zip | Select-Object -First 1).FullName
+          Set-Content -Path $zip -Stream Zone.Identifier -Value "[ZoneTransfer]`r`nZoneId=3"
+          (Get-FileHash $zip -Algorithm SHA256).Hash | Tee-Object "$env:OUT\zip_sha256.txt"
+          Expand-Archive -Path $zip -DestinationPath C:\scan
+          Start-Sleep 20
+          Get-ChildItem -Recurse C:\scan | Select-Object FullName,Length | Format-Table -AutoSize | Out-String -Width 200 | Tee-Object "$env:OUT\files_after_unpack.txt"
+
+      - name: Scan the zip and the folder
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $mp = "$env:ProgramFiles\Windows Defender\MpCmdRun.exe"
+          $zip = (Get-ChildItem C:\dl\*.zip | Select-Object -First 1).FullName
+          & $mp -Scan -ScanType 3 -File $zip -DisableRemediation | Tee-Object "$env:OUT\scan_zip.txt"
+          "exit $LASTEXITCODE" | Tee-Object -Append "$env:OUT\scan_zip.txt"
+          & $mp -Scan -ScanType 3 -File C:\scan -DisableRemediation | Tee-Object "$env:OUT\scan_folder.txt"
+          "exit $LASTEXITCODE" | Tee-Object -Append "$env:OUT\scan_folder.txt"
+          exit 0
+
+      - name: Shortcuts with the launcher's own command
+        run: |
+          $ErrorActionPreference = 'Continue'
+          python -c "import zipfile,sys; z=zipfile.ZipFile(sys.argv[1]); open(sys.argv[2],'wb').write(z.read('shortcuts.lua'))" "$env:APP\Balatro Overhaul Launcher.exe" "$env:GITHUB_WORKSPACE\shortcut-test\shortcuts.lua"
+          New-Item -ItemType Directory -Force C:\scan\game | Out-Null
+          $env:TEST_EXE = "$env:APP\Balatro Overhaul Launcher.exe"
+          $env:TEST_WORKDIR = "C:\scan\game"
+          $env:TEST_RESULT = "$env:OUT\shortcut_command.txt"
+          $p = Start-Process -FilePath "$env:APP\love.exe" -ArgumentList "`"$env:GITHUB_WORKSPACE\shortcut-test`"" -PassThru
+          if (-not $p.WaitForExit(90000)) { Stop-Process -Id $p.Id -Force; "love.exe did not finish" | Tee-Object "$env:OUT\shortcut_command.txt" }
+          Start-Sleep 5
+          $desk = Join-Path ([Environment]::GetFolderPath('Desktop')) 'Balatro Overhaul.lnk'
+          $prog = Join-Path ([Environment]::GetFolderPath('Programs')) 'Balatro Overhaul.lnk'
+          "desktop shortcut: $(Test-Path $desk)  ($desk)" | Tee-Object "$env:OUT\shortcuts.txt"
+          "start menu shortcut: $(Test-Path $prog)  ($prog)" | Tee-Object -Append "$env:OUT\shortcuts.txt"
+          if (Test-Path $desk) {
+            $s = (New-Object -ComObject WScript.Shell).CreateShortcut($desk)
+            "target: $($s.TargetPath)  args: $($s.Arguments)  workdir: $($s.WorkingDirectory)" | Tee-Object -Append "$env:OUT\shortcuts.txt"
+          }
+          Get-Content "$env:OUT\shortcut_command.txt" -ErrorAction SilentlyContinue
+          exit 0
+
+      - name: Start the launcher for a minute
+        run: |
+          $ErrorActionPreference = 'Continue'
+          New-Item -ItemType Directory -Force C:\mesa | Out-Null
+          gh release download -R pal1000/mesa-dist-win -p "*release-msvc.7z" -D C:\mesa
+          $seven = (Get-ChildItem C:\mesa\*.7z | Select-Object -First 1).FullName
+          7z x $seven -oC:\mesa\x -y | Out-Null
+          foreach ($n in 'opengl32.dll','libgallium_wgl.dll','libglapi.dll') {
+            $f = Join-Path C:\mesa\x\x64 $n
+            if (Test-Path $f) { Copy-Item $f $env:APP }
+          }
+          $env:GALLIUM_DRIVER = 'llvmpipe'
+          $p = Start-Process -FilePath "$env:APP\Balatro Overhaul Launcher.exe" -PassThru
+          Start-Sleep 60
+          $alive = -not $p.HasExited
+          "launcher still running after 60 s: $alive" | Tee-Object "$env:OUT\launcher_run.txt"
+          if (-not $alive) { "exit code: $($p.ExitCode)" | Tee-Object -Append "$env:OUT\launcher_run.txt" }
+          Add-Type -AssemblyName System.Windows.Forms, System.Drawing
+          $b = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
+          $bmp = New-Object System.Drawing.Bitmap $b.Width, $b.Height
+          $g = [System.Drawing.Graphics]::FromImage($bmp)
+          $g.CopyFromScreen($b.Location, [System.Drawing.Point]::Empty, $b.Size)
+          $bmp.Save("$env:OUT\launcher.png")
+          if ($alive) { Stop-Process -Id $p.Id -Force }
+          "launcher exe still on disk: $(Test-Path "$env:APP\Balatro Overhaul Launcher.exe")" | Tee-Object -Append "$env:OUT\launcher_run.txt"
+          exit 0
+
+      - name: What Defender saw
+        run: |
+          $ErrorActionPreference = 'Continue'
+          Start-Sleep 20
+          $det = @(Get-MpThreatDetection)
+          $hits = @($det | Where-Object { ($_.Resources -join ' ') -notmatch 'eicar' })
+          "detections outside the eicar test: $($hits.Count)" | Tee-Object "$env:OUT\detections.txt"
+          $det | Select-Object InitialDetectionTime,ProcessName,ThreatID,ActionSuccess,Resources | Format-List | Out-String -Width 300 | Tee-Object -Append "$env:OUT\detections.txt"
+          Get-MpThreat | Select-Object ThreatName,SeverityID,CategoryID,Resources | Format-List | Out-String -Width 300 | Tee-Object -Append "$env:OUT\detections.txt"
+          Get-WinEvent -LogName 'Microsoft-Windows-Windows Defender/Operational' -MaxEvents 60 -ErrorAction SilentlyContinue | Where-Object { $_.Id -in 1006,1007,1015,1116,1117,1121,1122 } | Select-Object TimeCreated,Id,Message | Format-List | Out-String -Width 300 | Tee-Object "$env:OUT\defender_events.txt"
+          $sum = @()
+          foreach ($f in 'defender_after.txt','eicar.txt','zip_sha256.txt','scan_zip.txt','scan_folder.txt','shortcut_command.txt','shortcuts.txt','launcher_run.txt','detections.txt') {
+            $sum += "### $f"
+            $sum += '```'
+            $sum += (Get-Content "$env:OUT\$f" -ErrorAction SilentlyContinue | Where-Object { $_.Trim() } | Select-Object -First 40)
+            $sum += '```'
+          }
+          $sum | Out-File -Append -Encoding utf8 $env:GITHUB_STEP_SUMMARY
+          exit 0
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: defender-scan
+          path: C:\out
